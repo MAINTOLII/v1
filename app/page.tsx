@@ -1,18 +1,28 @@
-"use client";
+import React, { useState, useEffect } from "react";
+import { getSupabase } from "@/lib/supabaseClient";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
-
-export default function HomePage() {
-  const router = useRouter();
+export default function CategoriesSection() {
+  const [categories, setCategories] = useState([]);
+  const supabase = getSupabase();
 
   useEffect(() => {
-    router.replace("/admin");
-  }, [router]);
+    async function fetchCategories() {
+      const { data, error } = await supabase.from("categories").select("*");
+      if (!error) {
+        setCategories(data);
+      }
+    }
+    fetchCategories();
+  }, [supabase]);
 
   return (
-    <div className="p-6 text-sm text-gray-600">
-      Redirecting…
-    </div>
+    <section>
+      <h2>Categories</h2>
+      <ul>
+        {categories.map((category) => (
+          <li key={category.id}>{category.name}</li>
+        ))}
+      </ul>
+    </section>
   );
 }
