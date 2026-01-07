@@ -5,9 +5,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-type Cat = { id: string; name: string; slug: string };
-type Sub = { id: string; category_id: string; name: string; slug: string };
-type SubSub = { id: string; subcategory_id: string; name: string; slug: string };
+type Cat = { id: string; name_en: string; name_so: string; slug: string; img: string | null };
+type Sub = { id: string; category_id: string; name_en: string; name_so: string; slug: string; img: string | null };
+type SubSub = { id: string; subcategory_id: string; name_en: string; name_so: string; slug: string; img: string | null };
 
 function slugify(input: string) {
   return input
@@ -27,9 +27,17 @@ export default function CategoriesSection() {
   const [subcategories, setSubcategories] = useState<Sub[]>([]);
   const [subsubs, setSubsubs] = useState<SubSub[]>([]);
 
-  const [catName, setCatName] = useState("");
-  const [subName, setSubName] = useState("");
-  const [subsubName, setSubsubName] = useState("");
+  const [catNameEn, setCatNameEn] = useState("");
+  const [catNameSo, setCatNameSo] = useState("");
+  const [catImg, setCatImg] = useState("");
+
+  const [subNameEn, setSubNameEn] = useState("");
+  const [subNameSo, setSubNameSo] = useState("");
+  const [subImg, setSubImg] = useState("");
+
+  const [subsubNameEn, setSubsubNameEn] = useState("");
+  const [subsubNameSo, setSubsubNameSo] = useState("");
+  const [subsubImg, setSubsubImg] = useState("");
 
   const [selectedCatId, setSelectedCatId] = useState<string>("");
   const [selectedSubId, setSelectedSubId] = useState<string>("");
@@ -50,11 +58,11 @@ export default function CategoriesSection() {
     try {
       const [{ data: cats, error: catsErr }, { data: subs, error: subsErr }, { data: ssubs, error: ssubsErr }] =
         await Promise.all([
-          supabase.from("categories").select("id,name,slug").order("created_at", { ascending: false }),
-          supabase.from("subcategories").select("id,category_id,name,slug").order("created_at", { ascending: false }),
+          supabase.from("categories").select("id,name_en,name_so,slug,img").order("created_at", { ascending: false }),
+          supabase.from("subcategories").select("id,category_id,name_en,name_so,slug,img").order("created_at", { ascending: false }),
           supabase
             .from("subsubcategories")
-            .select("id,subcategory_id,name,slug")
+            .select("id,subcategory_id,name_en,name_so,slug,img")
             .order("created_at", { ascending: false }),
         ]);
 
@@ -79,24 +87,28 @@ export default function CategoriesSection() {
   }, []);
 
   async function addCategory() {
-    const name = catName.trim();
-    if (!name) return;
+    const name_en = catNameEn.trim();
+    const name_so = catNameSo.trim();
+    const img = catImg.trim();
+    if (!name_en || !name_so) return;
 
     setErrorMsg(null);
     setBusyKey("add-category");
     try {
-      const slug = slugify(name);
+      const slug = slugify(name_en);
 
       const { data, error } = await supabase
         .from("categories")
-        .insert({ name, slug })
-        .select("id,name,slug")
+        .insert({ name_en, name_so, slug, img: img || null })
+        .select("id,name_en,name_so,slug,img")
         .single();
 
       if (error) throw error;
 
       setCategories((prev) => [data as Cat, ...prev]);
-      setCatName("");
+      setCatNameEn("");
+      setCatNameSo("");
+      setCatImg("");
     } catch (e: any) {
       console.error("addCategory error:", e);
       setErrorMsg(e?.message ?? String(e));
@@ -106,24 +118,28 @@ export default function CategoriesSection() {
   }
 
   async function addSubcategory() {
-    const name = subName.trim();
-    if (!name || !selectedCatId) return;
+    const name_en = subNameEn.trim();
+    const name_so = subNameSo.trim();
+    const img = subImg.trim();
+    if (!name_en || !name_so || !selectedCatId) return;
 
     setErrorMsg(null);
     setBusyKey("add-subcategory");
     try {
-      const slug = slugify(name);
+      const slug = slugify(name_en);
 
       const { data, error } = await supabase
         .from("subcategories")
-        .insert({ category_id: selectedCatId, name, slug })
-        .select("id,category_id,name,slug")
+        .insert({ category_id: selectedCatId, name_en, name_so, slug, img: img || null })
+        .select("id,category_id,name_en,name_so,slug,img")
         .single();
 
       if (error) throw error;
 
       setSubcategories((prev) => [data as Sub, ...prev]);
-      setSubName("");
+      setSubNameEn("");
+      setSubNameSo("");
+      setSubImg("");
     } catch (e: any) {
       console.error("addSubcategory error:", e);
       setErrorMsg(e?.message ?? String(e));
@@ -133,24 +149,28 @@ export default function CategoriesSection() {
   }
 
   async function addSubsub() {
-    const name = subsubName.trim();
-    if (!name || !selectedSubId) return;
+    const name_en = subsubNameEn.trim();
+    const name_so = subsubNameSo.trim();
+    const img = subsubImg.trim();
+    if (!name_en || !name_so || !selectedSubId) return;
 
     setErrorMsg(null);
     setBusyKey("add-subsub");
     try {
-      const slug = slugify(name);
+      const slug = slugify(name_en);
 
       const { data, error } = await supabase
         .from("subsubcategories")
-        .insert({ subcategory_id: selectedSubId, name, slug })
-        .select("id,subcategory_id,name,slug")
+        .insert({ subcategory_id: selectedSubId, name_en, name_so, slug, img: img || null })
+        .select("id,subcategory_id,name_en,name_so,slug,img")
         .single();
 
       if (error) throw error;
 
       setSubsubs((prev) => [data as SubSub, ...prev]);
-      setSubsubName("");
+      setSubsubNameEn("");
+      setSubsubNameSo("");
+      setSubsubImg("");
     } catch (e: any) {
       console.error("addSubsub error:", e);
       setErrorMsg(e?.message ?? String(e));
@@ -274,21 +294,35 @@ export default function CategoriesSection() {
         <div className="min-w-0 rounded-xl border p-4">
           <div className="text-sm font-medium">Categories</div>
 
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 space-y-2">
             <input
-              value={catName}
-              onChange={(e) => setCatName(e.target.value)}
+              value={catNameEn}
+              onChange={(e) => setCatNameEn(e.target.value)}
               className="w-full rounded-lg border px-3 py-2 text-sm text-gray-900"
-              placeholder="e.g. Grocery"
+              placeholder="Category name (EN) e.g. Grocery"
             />
-            <button
-              type="button"
-              onClick={addCategory}
-              disabled={busyKey === "add-category"}
-              className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white disabled:opacity-50"
-            >
-              {busyKey === "add-category" ? "Adding..." : "Add"}
-            </button>
+            <input
+              value={catNameSo}
+              onChange={(e) => setCatNameSo(e.target.value)}
+              className="w-full rounded-lg border px-3 py-2 text-sm text-gray-900"
+              placeholder="Category name (SO) e.g. Raashiin"
+            />
+            <div className="flex gap-2">
+              <input
+                value={catImg}
+                onChange={(e) => setCatImg(e.target.value)}
+                className="w-full rounded-lg border px-3 py-2 text-sm text-gray-900"
+                placeholder="Image URL (optional)"
+              />
+              <button
+                type="button"
+                onClick={addCategory}
+                disabled={busyKey === "add-category" || !catNameEn.trim() || !catNameSo.trim()}
+                className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white disabled:opacity-50"
+              >
+                {busyKey === "add-category" ? "Adding..." : "Add"}
+              </button>
+            </div>
           </div>
 
           <ul className="mt-4 space-y-2">
@@ -307,7 +341,8 @@ export default function CategoriesSection() {
                     setSelectedSubId("");
                   }}
                 >
-                  <div className="truncate font-medium">{c.name}</div>
+                  <div className="truncate font-medium">{c.name_en}</div>
+                  <div className="truncate text-xs text-gray-600">{c.name_so}</div>
                   <div className="truncate text-xs text-gray-500">{c.slug}</div>
                 </button>
 
@@ -333,22 +368,38 @@ export default function CategoriesSection() {
           <div className="text-sm font-medium">Subcategories</div>
           <p className="mt-1 text-xs text-gray-500">Select a category first.</p>
 
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 space-y-2">
             <input
-              value={subName}
-              onChange={(e) => setSubName(e.target.value)}
+              value={subNameEn}
+              onChange={(e) => setSubNameEn(e.target.value)}
               className="w-full rounded-lg border px-3 py-2 text-sm text-gray-900"
-              placeholder="e.g. Pasta & Noodles"
+              placeholder="Subcategory name (EN)"
               disabled={!selectedCatId}
             />
-            <button
-              type="button"
-              onClick={addSubcategory}
-              disabled={!selectedCatId || busyKey === "add-subcategory"}
-              className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white disabled:opacity-50"
-            >
-              {busyKey === "add-subcategory" ? "Adding..." : "Add"}
-            </button>
+            <input
+              value={subNameSo}
+              onChange={(e) => setSubNameSo(e.target.value)}
+              className="w-full rounded-lg border px-3 py-2 text-sm text-gray-900"
+              placeholder="Subcategory name (SO)"
+              disabled={!selectedCatId}
+            />
+            <div className="flex gap-2">
+              <input
+                value={subImg}
+                onChange={(e) => setSubImg(e.target.value)}
+                className="w-full rounded-lg border px-3 py-2 text-sm text-gray-900"
+                placeholder="Image URL (optional)"
+                disabled={!selectedCatId}
+              />
+              <button
+                type="button"
+                onClick={addSubcategory}
+                disabled={!selectedCatId || busyKey === "add-subcategory" || !subNameEn.trim() || !subNameSo.trim()}
+                className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white disabled:opacity-50"
+              >
+                {busyKey === "add-subcategory" ? "Adding..." : "Add"}
+              </button>
+            </div>
           </div>
 
           <ul className="mt-4 space-y-2">
@@ -364,7 +415,8 @@ export default function CategoriesSection() {
                   className="min-w-0 flex-1 text-left"
                   onClick={() => setSelectedSubId(s.id)}
                 >
-                  <div className="truncate font-medium">{s.name}</div>
+                  <div className="truncate font-medium">{s.name_en}</div>
+                  <div className="truncate text-xs text-gray-600">{s.name_so}</div>
                   <div className="truncate text-xs text-gray-500">{s.slug}</div>
                 </button>
 
@@ -392,22 +444,38 @@ export default function CategoriesSection() {
           <div className="text-sm font-medium">Sub-subcategories</div>
           <p className="mt-1 text-xs text-gray-500">Select a subcategory first.</p>
 
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 space-y-2">
             <input
-              value={subsubName}
-              onChange={(e) => setSubsubName(e.target.value)}
+              value={subsubNameEn}
+              onChange={(e) => setSubsubNameEn(e.target.value)}
               className="w-full rounded-lg border px-3 py-2 text-sm text-gray-900"
-              placeholder="e.g. Pasta"
+              placeholder="Sub-subcategory name (EN)"
               disabled={!selectedSubId}
             />
-            <button
-              type="button"
-              onClick={addSubsub}
-              disabled={!selectedSubId || busyKey === "add-subsub"}
-              className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white disabled:opacity-50"
-            >
-              {busyKey === "add-subsub" ? "Adding..." : "Add"}
-            </button>
+            <input
+              value={subsubNameSo}
+              onChange={(e) => setSubsubNameSo(e.target.value)}
+              className="w-full rounded-lg border px-3 py-2 text-sm text-gray-900"
+              placeholder="Sub-subcategory name (SO)"
+              disabled={!selectedSubId}
+            />
+            <div className="flex gap-2">
+              <input
+                value={subsubImg}
+                onChange={(e) => setSubsubImg(e.target.value)}
+                className="w-full rounded-lg border px-3 py-2 text-sm text-gray-900"
+                placeholder="Image URL (optional)"
+                disabled={!selectedSubId}
+              />
+              <button
+                type="button"
+                onClick={addSubsub}
+                disabled={!selectedSubId || busyKey === "add-subsub" || !subsubNameEn.trim() || !subsubNameSo.trim()}
+                className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white disabled:opacity-50"
+              >
+                {busyKey === "add-subsub" ? "Adding..." : "Add"}
+              </button>
+            </div>
           </div>
 
           <ul className="mt-4 space-y-2">
@@ -417,7 +485,8 @@ export default function CategoriesSection() {
                 className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm"
               >
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">{ss.name}</div>
+                  <div className="truncate font-medium">{ss.name_en}</div>
+                  <div className="truncate text-xs text-gray-600">{ss.name_so}</div>
                   <div className="truncate text-xs text-gray-500">{ss.slug}</div>
                 </div>
 

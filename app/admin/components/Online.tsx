@@ -332,7 +332,18 @@ export default function OnlineSection() {
       const { error: itemsErr } = await supabase.from("order_items").insert(itemsPayload);
       if (itemsErr) throw itemsErr;
 
-      setSaveOk(`Order created: #${orderId.slice(0, 8)} (phone ${phoneDigits})`);
+      // 4) If user created the order as "confirmed", immediately post the sale movements + deduct inventory
+      // so the Sales page can show cost (cost comes from inventory_movements.type='sale').
+      if (status === "confirmed") {
+        const { error: rpcErr } = await supabase.rpc("confirm_order", { p_order_id: orderId });
+        if (rpcErr) throw rpcErr;
+      }
+
+      setSaveOk(
+        status === "confirmed"
+          ? `Order created & confirmed: #${orderId.slice(0, 8)} (phone ${phoneDigits})`
+          : `Order created: #${orderId.slice(0, 8)} (phone ${phoneDigits})`
+      );
       clearAll();
     } catch (e) {
       setSaveErr(formatErr(e));
@@ -693,7 +704,7 @@ export default function OnlineSection() {
         </div>
 
         <div className="mt-3 text-xs text-gray-500">
-          This creates records in <b>orders</b> + <b>order_items</b>. Inventory reduction should happen when you confirm the order.
+          This creates records in <b>orders</b> + <b>order_items</b>. Inventory reduction happens when you confirm the order (or immediately if you create it as Confirmed).
         </div>
       </div>
     </div>

@@ -12,6 +12,7 @@ type OrderRow = {
   customer_phone: string | null;
   total: number;
   currency: string | null;
+  note: string | null;
   order_items: Array<{
     id: string;
     variant_id: string;
@@ -141,7 +142,7 @@ export default function SalesSection() {
     const { data: orders, error: oErr } = await supabase
       .from("orders")
       .select(
-        "id,created_at,channel,customer_phone,total,currency,order_items(id,variant_id,qty_g,qty_units,unit_price,line_total,variant:product_variants(id,name,variant_type,product:products(name,brand)))"
+        "id,created_at,channel,customer_phone,total,currency,note,order_items(id,variant_id,qty_g,qty_units,unit_price,line_total,variant:product_variants(id,name,variant_type,product:products(name,brand)))"
       )
       .in("status", ["confirmed", "out_for_delivery", "delivered"] satisfies OrderStatus[])
       .gte("created_at", from)
@@ -223,7 +224,13 @@ export default function SalesSection() {
       return {
         order_id: o.id,
         created_at: o.created_at,
-        channel: o.channel,
+        channel: (() => {
+          const ch = (o.channel ?? "").toLowerCase();
+          const n = (o.note ?? "").toLowerCase();
+          // If DB channel cannot store "pos", infer POS from the note/receipt.
+          if (n.includes("source: fast pos") || n.includes("pos payment:") || n.includes("pos-") || n.includes("source: pos")) return "POS";
+          return ch ? o.channel : "—";
+        })(),
         customer,
         currency,
         items,

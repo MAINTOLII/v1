@@ -1,15 +1,14 @@
-
-
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-type Category = { id: string; name: string };
-type Subcategory = { id: string; name: string; category?: Category | null };
+type Category = { id: string; name: string; slug?: string | null };
+type Subcategory = { id: string; name: string; slug?: string | null; category?: Category | null };
 type SubsubCategory = {
   id: string;
   name: string;
+  slug?: string | null;
   subcategory?: Subcategory | null;
 };
 
@@ -17,6 +16,9 @@ type Product = {
   id: string;
   subsubcat_id: string;
   name: string;
+  slug: string | null;
+  description: string | null;
+  tags: string[];
   brand: string | null;
   is_active: boolean;
   created_at?: string;
@@ -47,6 +49,42 @@ function formatErr(e: any) {
   return "Unknown error (check console)";
 }
 
+function slugify(input: string) {
+  return (input ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/['"`]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
+}
+
+function parseTags(input: string): string[] {
+  const raw = (input ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of raw) {
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+  }
+  return out;
+}
+
+function normalizeTags(v: any): string[] {
+  if (Array.isArray(v)) return v.filter(Boolean).map((x: any) => String(x));
+  if (typeof v === "string") return parseTags(v);
+  return [];
+}
+
+function displayName(row: any) {
+  return String(row?.name_en ?? row?.name_so ?? row?.name ?? "");
+}
+
 export default function ProductsManagerSection() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -66,6 +104,9 @@ export default function ProductsManagerSection() {
 
   // Create form
   const [newName, setNewName] = useState("");
+  const [newSlug, setNewSlug] = useState("");
+  const [newDescription, setNewDescription] = useState("");
+  const [newTags, setNewTags] = useState("");
   const [newBrand, setNewBrand] = useState("");
   const [newSubsubId, setNewSubsubId] = useState("");
   const [newActive, setNewActive] = useState(true);
@@ -73,6 +114,9 @@ export default function ProductsManagerSection() {
   // Edit modal
   const [editing, setEditing] = useState<Product | null>(null);
   const [editName, setEditName] = useState("");
+  const [editSlug, setEditSlug] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editTags, setEditTags] = useState("");
   const [editBrand, setEditBrand] = useState("");
   const [editSubsubId, setEditSubsubId] = useState("");
   const [editActive, setEditActive] = useState(true);
@@ -101,27 +145,34 @@ export default function ProductsManagerSection() {
       if (subsubId && subsub?.id !== subsubId) return false;
 
       if (!needle) return true;
-      const hay = `${p.name ?? ""} ${p.brand ?? ""}`.toLowerCase();
+      const hay = `${p.name ?? ""} ${p.slug ?? ""} ${p.brand ?? ""} ${p.description ?? ""} ${(p.tags ?? []).join(
+        " "
+      )}`.toLowerCase();
       return hay.includes(needle);
     });
   }, [products, q, onlyActive, categoryId, subcategoryId, subsubId]);
 
   async function loadFilters() {
-    const { data: cData, error: cErr } = await supabase
-      .from("categories")
-      .select("id,name")
-      .order("name");
+    const { data: cData, error: cErr } = await supabase.from("categories").select("id,name_en,name_so,slug").order("name_en");
     if (cErr) throw cErr;
-    setCategories(cData ?? []);
+    setCategories(
+      (cData ?? []).map((r: any) => ({
+        id: String(r.id),
+        name: displayName(r),
+        slug: r.slug ?? null,
+      }))
+    );
 
     const { data: scData, error: scErr } = await supabase
       .from("subcategories")
-      .select("id,name,category:categories!subcategories_category_id_fkey(id,name)")
-      .order("name");
+      .select("id,name_en,name_so,slug,category:categories!subcategories_category_id_fkey(id,name_en,name_so,slug)")
+      .order("name_en");
     if (scErr) throw scErr;
+
     const scNorm: Subcategory[] = (scData ?? []).map((row: any) => ({
       id: String(row.id),
-      name: String(row.name),
+      name: displayName(row),
+      slug: row.slug ?? null,
       category: asOne<Category>(row.category),
     }));
     setSubcategories(scNorm);
@@ -129,10 +180,11 @@ export default function ProductsManagerSection() {
     const { data: ssData, error: ssErr } = await supabase
       .from("subsubcategories")
       .select(
-        "id,name,subcategory:subcategories!subsubcategories_subcategory_id_fkey(id,name,category:categories!subcategories_category_id_fkey(id,name))"
+        "id,name_en,name_so,slug,subcategory:subcategories!subsubcategories_subcategory_id_fkey(id,name_en,name_so,slug,category:categories!subcategories_category_id_fkey(id,name_en,name_so,slug))"
       )
-      .order("name");
+      .order("name_en");
     if (ssErr) throw ssErr;
+
     const ssNorm: SubsubCategory[] = (ssData ?? []).map((row: any) => {
       const subcatRaw = asOne<any>(row.subcategory);
       const catRaw = subcatRaw ? asOne<any>(subcatRaw.category) : null;
@@ -140,11 +192,13 @@ export default function ProductsManagerSection() {
       const subcat: Subcategory | null = subcatRaw
         ? {
             id: String(subcatRaw.id),
-            name: String(subcatRaw.name),
+            name: displayName(subcatRaw),
+            slug: subcatRaw.slug ?? null,
             category: catRaw
               ? {
                   id: String(catRaw.id),
-                  name: String(catRaw.name),
+                  name: displayName(catRaw),
+                  slug: catRaw.slug ?? null,
                 }
               : null,
           }
@@ -152,10 +206,12 @@ export default function ProductsManagerSection() {
 
       return {
         id: String(row.id),
-        name: String(row.name),
+        name: displayName(row),
+        slug: row.slug ?? null,
         subcategory: subcat,
       };
     });
+
     setSubsubs(ssNorm);
   }
 
@@ -163,10 +219,12 @@ export default function ProductsManagerSection() {
     const { data, error } = await supabase
       .from("products")
       .select(
-        "id,subsubcat_id,name,brand,is_active,created_at,subsub:subsubcategories!products_subsubcat_id_fkey(id,name,subcategory:subcategories!subsubcategories_subcategory_id_fkey(id,name,category:categories!subcategories_category_id_fkey(id,name)))"
+        "id,subsubcat_id,name,slug,description,tags,brand,is_active,created_at,subsub:subsubcategories!products_subsubcat_id_fkey(id,name_en,name_so,slug,subcategory:subcategories!subsubcategories_subcategory_id_fkey(id,name_en,name_so,slug,category:categories!subcategories_category_id_fkey(id,name_en,name_so,slug)))"
       )
       .order("created_at", { ascending: false });
+
     if (error) throw error;
+
     const pNorm: Product[] = (data ?? []).map((row: any) => {
       const subsubRaw = asOne<any>(row.subsub);
       const subcatRaw = subsubRaw ? asOne<any>(subsubRaw.subcategory) : null;
@@ -175,11 +233,13 @@ export default function ProductsManagerSection() {
       const subcat: Subcategory | null = subcatRaw
         ? {
             id: String(subcatRaw.id),
-            name: String(subcatRaw.name),
+            name: displayName(subcatRaw),
+            slug: subcatRaw.slug ?? null,
             category: catRaw
               ? {
                   id: String(catRaw.id),
-                  name: String(catRaw.name),
+                  name: displayName(catRaw),
+                  slug: catRaw.slug ?? null,
                 }
               : null,
           }
@@ -188,7 +248,8 @@ export default function ProductsManagerSection() {
       const subsub: SubsubCategory | null = subsubRaw
         ? {
             id: String(subsubRaw.id),
-            name: String(subsubRaw.name),
+            name: displayName(subsubRaw),
+            slug: subsubRaw.slug ?? null,
             subcategory: subcat,
           }
         : null;
@@ -197,12 +258,16 @@ export default function ProductsManagerSection() {
         id: String(row.id),
         subsubcat_id: String(row.subsubcat_id),
         name: String(row.name),
+        slug: row.slug ?? null,
+        description: row.description ?? null,
+        tags: normalizeTags(row.tags),
         brand: row.brand ?? null,
         is_active: !!row.is_active,
         created_at: row.created_at,
         subsub,
       };
     });
+
     setProducts(pNorm);
   }
 
@@ -238,8 +303,16 @@ export default function ProductsManagerSection() {
         return;
       }
 
+      const cleanName = newName.trim();
+      const cleanSlug = (newSlug.trim() ? slugify(newSlug.trim()) : slugify(cleanName)) || null;
+      const cleanDesc = newDescription.trim() || null;
+      const cleanTags = parseTags(newTags);
+
       const payload = {
-        name: newName.trim(),
+        name: cleanName,
+        slug: cleanSlug,
+        description: cleanDesc,
+        tags: cleanTags,
         brand: newBrand.trim() || null,
         subsubcat_id: newSubsubId,
         is_active: newActive,
@@ -249,52 +322,60 @@ export default function ProductsManagerSection() {
         .from("products")
         .insert(payload)
         .select(
-          "id,subsubcat_id,name,brand,is_active,created_at,subsub:subsubcategories!products_subsubcat_id_fkey(id,name,subcategory:subcategories!subsubcategories_subcategory_id_fkey(id,name,category:categories!subcategories_category_id_fkey(id,name)))"
+          "id,subsubcat_id,name,slug,description,tags,brand,is_active,created_at,subsub:subsubcategories!products_subsubcat_id_fkey(id,name_en,name_so,slug,subcategory:subcategories!subsubcategories_subcategory_id_fkey(id,name_en,name_so,slug,category:categories!subcategories_category_id_fkey(id,name_en,name_so,slug)))"
         )
         .single();
 
       if (error) throw error;
 
-      setProducts((prev) => {
-        const row: any = data;
-        const subsubRaw = asOne<any>(row.subsub);
-        const subcatRaw = subsubRaw ? asOne<any>(subsubRaw.subcategory) : null;
-        const catRaw = subcatRaw ? asOne<any>(subcatRaw.category) : null;
+      const row: any = data;
+      const subsubRaw = asOne<any>(row.subsub);
+      const subcatRaw = subsubRaw ? asOne<any>(subsubRaw.subcategory) : null;
+      const catRaw = subcatRaw ? asOne<any>(subcatRaw.category) : null;
 
-        const subcat: Subcategory | null = subcatRaw
-          ? {
-              id: String(subcatRaw.id),
-              name: String(subcatRaw.name),
-              category: catRaw
-                ? {
-                    id: String(catRaw.id),
-                    name: String(catRaw.name),
-                  }
-                : null,
-            }
-          : null;
+      const subcat: Subcategory | null = subcatRaw
+        ? {
+            id: String(subcatRaw.id),
+            name: displayName(subcatRaw),
+            slug: subcatRaw.slug ?? null,
+            category: catRaw
+              ? {
+                  id: String(catRaw.id),
+                  name: displayName(catRaw),
+                  slug: catRaw.slug ?? null,
+                }
+              : null,
+          }
+        : null;
 
-        const subsub: SubsubCategory | null = subsubRaw
-          ? {
-              id: String(subsubRaw.id),
-              name: String(subsubRaw.name),
-              subcategory: subcat,
-            }
-          : null;
+      const subsub: SubsubCategory | null = subsubRaw
+        ? {
+            id: String(subsubRaw.id),
+            name: displayName(subsubRaw),
+            slug: subsubRaw.slug ?? null,
+            subcategory: subcat,
+          }
+        : null;
 
-        const normalized: Product = {
-          id: String(row.id),
-          subsubcat_id: String(row.subsubcat_id),
-          name: String(row.name),
-          brand: row.brand ?? null,
-          is_active: !!row.is_active,
-          created_at: row.created_at,
-          subsub,
-        };
+      const normalized: Product = {
+        id: String(row.id),
+        subsubcat_id: String(row.subsubcat_id),
+        name: String(row.name),
+        slug: row.slug ?? null,
+        description: row.description ?? null,
+        tags: normalizeTags(row.tags),
+        brand: row.brand ?? null,
+        is_active: !!row.is_active,
+        created_at: row.created_at,
+        subsub,
+      };
 
-        return [normalized, ...prev];
-      });
+      setProducts((prev) => [normalized, ...prev]);
+
       setNewName("");
+      setNewSlug("");
+      setNewDescription("");
+      setNewTags("");
       setNewBrand("");
       setNewSubsubId("");
       setNewActive(true);
@@ -309,6 +390,9 @@ export default function ProductsManagerSection() {
   function openEdit(p: Product) {
     setEditing(p);
     setEditName(p.name ?? "");
+    setEditSlug(p.slug ?? "");
+    setEditDescription(p.description ?? "");
+    setEditTags((p.tags ?? []).join(", "));
     setEditBrand(p.brand ?? "");
     setEditSubsubId(p.subsubcat_id ?? "");
     setEditActive(!!p.is_active);
@@ -333,8 +417,16 @@ export default function ProductsManagerSection() {
         return;
       }
 
+      const cleanName = editName.trim();
+      const cleanSlug = (editSlug.trim() ? slugify(editSlug.trim()) : slugify(cleanName)) || null;
+      const cleanDesc = editDescription.trim() || null;
+      const cleanTags = parseTags(editTags);
+
       const payload = {
-        name: editName.trim(),
+        name: cleanName,
+        slug: cleanSlug,
+        description: cleanDesc,
+        tags: cleanTags,
         brand: editBrand.trim() || null,
         subsubcat_id: editSubsubId,
         is_active: editActive,
@@ -345,51 +437,55 @@ export default function ProductsManagerSection() {
         .update(payload)
         .eq("id", editing.id)
         .select(
-          "id,subsubcat_id,name,brand,is_active,created_at,subsub:subsubcategories!products_subsubcat_id_fkey(id,name,subcategory:subcategories!subsubcategories_subcategory_id_fkey(id,name,category:categories!subcategories_category_id_fkey(id,name)))"
+          "id,subsubcat_id,name,slug,description,tags,brand,is_active,created_at,subsub:subsubcategories!products_subsubcat_id_fkey(id,name_en,name_so,slug,subcategory:subcategories!subsubcategories_subcategory_id_fkey(id,name_en,name_so,slug,category:categories!subcategories_category_id_fkey(id,name_en,name_so,slug)))"
         )
         .single();
 
       if (error) throw error;
 
-      setProducts((prev) => {
-        const row: any = data;
-        const subsubRaw = asOne<any>(row.subsub);
-        const subcatRaw = subsubRaw ? asOne<any>(subsubRaw.subcategory) : null;
-        const catRaw = subcatRaw ? asOne<any>(subcatRaw.category) : null;
+      const row: any = data;
+      const subsubRaw = asOne<any>(row.subsub);
+      const subcatRaw = subsubRaw ? asOne<any>(subsubRaw.subcategory) : null;
+      const catRaw = subcatRaw ? asOne<any>(subcatRaw.category) : null;
 
-        const subcat: Subcategory | null = subcatRaw
-          ? {
-              id: String(subcatRaw.id),
-              name: String(subcatRaw.name),
-              category: catRaw
-                ? {
-                    id: String(catRaw.id),
-                    name: String(catRaw.name),
-                  }
-                : null,
-            }
-          : null;
+      const subcat: Subcategory | null = subcatRaw
+        ? {
+            id: String(subcatRaw.id),
+            name: displayName(subcatRaw),
+            slug: subcatRaw.slug ?? null,
+            category: catRaw
+              ? {
+                  id: String(catRaw.id),
+                  name: displayName(catRaw),
+                  slug: catRaw.slug ?? null,
+                }
+              : null,
+          }
+        : null;
 
-        const subsub: SubsubCategory | null = subsubRaw
-          ? {
-              id: String(subsubRaw.id),
-              name: String(subsubRaw.name),
-              subcategory: subcat,
-            }
-          : null;
+      const subsub: SubsubCategory | null = subsubRaw
+        ? {
+            id: String(subsubRaw.id),
+            name: displayName(subsubRaw),
+            slug: subsubRaw.slug ?? null,
+            subcategory: subcat,
+          }
+        : null;
 
-        const normalized: Product = {
-          id: String(row.id),
-          subsubcat_id: String(row.subsubcat_id),
-          name: String(row.name),
-          brand: row.brand ?? null,
-          is_active: !!row.is_active,
-          created_at: row.created_at,
-          subsub,
-        };
+      const normalized: Product = {
+        id: String(row.id),
+        subsubcat_id: String(row.subsubcat_id),
+        name: String(row.name),
+        slug: row.slug ?? null,
+        description: row.description ?? null,
+        tags: normalizeTags(row.tags),
+        brand: row.brand ?? null,
+        is_active: !!row.is_active,
+        created_at: row.created_at,
+        subsub,
+      };
 
-        return prev.map((x) => (x.id === editing.id ? normalized : x));
-      });
+      setProducts((prev) => prev.map((x) => (x.id === editing.id ? normalized : x)));
       closeEdit();
     } catch (e: any) {
       console.error("ProductsManagerSection saveEdit error:", e);
@@ -420,9 +516,9 @@ export default function ProductsManagerSection() {
   }
 
   function catPathFor(p: Product) {
-    const cat = p.subsub?.subcategory?.category?.name;
-    const subcat = p.subsub?.subcategory?.name;
-    const subsub = p.subsub?.name;
+    const cat = p.subsub?.subcategory?.category ? displayName(p.subsub.subcategory.category) : undefined;
+    const subcat = p.subsub?.subcategory ? displayName(p.subsub.subcategory) : undefined;
+    const subsub = p.subsub ? displayName(p.subsub) : undefined;
     return [cat, subcat, subsub].filter(Boolean).join(" / ");
   }
 
@@ -431,9 +527,7 @@ export default function ProductsManagerSection() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold">Products Manager</h2>
-          <p className="mt-2 text-sm text-gray-600">
-            Search, filter, and manage products quickly. (Your original “Products” section can stay as-is.)
-          </p>
+          <p className="mt-2 text-sm text-gray-600">Search, filter, and manage products quickly.</p>
         </div>
 
         <button
@@ -446,9 +540,7 @@ export default function ProductsManagerSection() {
       </div>
 
       {errorMsg && (
-        <div className="mt-4 rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-800">
-          {errorMsg}
-        </div>
+        <div className="mt-4 rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-800">{errorMsg}</div>
       )}
 
       {/* Create */}
@@ -462,6 +554,37 @@ export default function ProductsManagerSection() {
               onChange={(e) => setNewName(e.target.value)}
               className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
               placeholder="e.g. Tomatoes"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs text-gray-600">Slug (optional)</label>
+            <input
+              value={newSlug}
+              onChange={(e) => setNewSlug(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+              placeholder="auto-from name"
+            />
+          </div>
+
+          <div className="sm:col-span-4">
+            <label className="text-xs text-gray-600">Description (optional)</label>
+            <textarea
+              value={newDescription}
+              onChange={(e) => setNewDescription(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+              rows={3}
+              placeholder="Short description..."
+            />
+          </div>
+
+          <div className="sm:col-span-4">
+            <label className="text-xs text-gray-600">Tags (comma separated)</label>
+            <input
+              value={newTags}
+              onChange={(e) => setNewTags(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+              placeholder="e.g. fresh, organic, imported"
             />
           </div>
 
@@ -497,11 +620,7 @@ export default function ProductsManagerSection() {
           </label>
 
           <div className="sm:col-span-4">
-            <button
-              type="button"
-              onClick={createProduct}
-              className="rounded-lg bg-gray-900 px-4 py-2 text-sm text-white"
-            >
+            <button type="button" onClick={createProduct} className="rounded-lg bg-gray-900 px-4 py-2 text-sm text-white">
               {loading ? "Saving…" : "Create"}
             </button>
           </div>
@@ -516,7 +635,7 @@ export default function ProductsManagerSection() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
-            placeholder="Product name / brand"
+            placeholder="Product name / slug / tags / brand"
           />
         </div>
 
@@ -576,12 +695,7 @@ export default function ProductsManagerSection() {
         </div>
 
         <div className="lg:col-span-5 flex items-center gap-2">
-          <input
-            id="pmOnlyActive"
-            type="checkbox"
-            checked={onlyActive}
-            onChange={(e) => setOnlyActive(e.target.checked)}
-          />
+          <input id="pmOnlyActive" type="checkbox" checked={onlyActive} onChange={(e) => setOnlyActive(e.target.checked)} />
           <label htmlFor="pmOnlyActive" className="text-sm text-gray-700">
             Only active
           </label>
@@ -594,8 +708,9 @@ export default function ProductsManagerSection() {
         <table className="min-w-full text-left text-sm">
           <thead className="bg-gray-50 text-xs text-gray-600">
             <tr>
-              <th className="px-3 py-2">Product</th>
+              <th className="px-3 py-2">Product / Slug</th>
               <th className="px-3 py-2">Brand</th>
+              <th className="px-3 py-2">Tags</th>
               <th className="px-3 py-2">Category</th>
               <th className="px-3 py-2">Active</th>
               <th className="px-3 py-2">Actions</th>
@@ -604,8 +719,12 @@ export default function ProductsManagerSection() {
           <tbody>
             {filtered.map((p) => (
               <tr key={p.id} className="border-t">
-                <td className="px-3 py-2 font-medium">{p.name}</td>
+                <td className="px-3 py-2">
+                  <div className="font-medium">{p.name}</div>
+                  {p.slug && <div className="text-xs text-gray-600">/{p.slug}</div>}
+                </td>
                 <td className="px-3 py-2 text-xs text-gray-700">{p.brand ?? ""}</td>
+                <td className="px-3 py-2 text-xs text-gray-700">{(p.tags ?? []).join(", ")}</td>
                 <td className="px-3 py-2 text-xs text-gray-700">{catPathFor(p)}</td>
                 <td className="px-3 py-2 text-xs text-gray-700">{p.is_active ? "Yes" : "No"}</td>
                 <td className="px-3 py-2">
@@ -631,7 +750,7 @@ export default function ProductsManagerSection() {
 
             {filtered.length === 0 && (
               <tr>
-                <td className="px-3 py-6 text-center text-sm text-gray-500" colSpan={5}>
+                <td className="px-3 py-6 text-center text-sm text-gray-500" colSpan={6}>
                   No results.
                 </td>
               </tr>
@@ -668,6 +787,36 @@ export default function ProductsManagerSection() {
                 />
               </div>
 
+              <div className="sm:col-span-2">
+                <label className="text-xs text-gray-600">Slug (optional)</label>
+                <input
+                  value={editSlug}
+                  onChange={(e) => setEditSlug(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                  placeholder="auto-from name"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="text-xs text-gray-600">Description (optional)</label>
+                <textarea
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                  rows={3}
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="text-xs text-gray-600">Tags (comma separated)</label>
+                <input
+                  value={editTags}
+                  onChange={(e) => setEditTags(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
+                  placeholder="e.g. fresh, organic"
+                />
+              </div>
+
               <div>
                 <label className="text-xs text-gray-600">Brand (optional)</label>
                 <input
@@ -687,7 +836,7 @@ export default function ProductsManagerSection() {
                   <option value="">Select…</option>
                   {subsubs.map((s) => (
                     <option key={s.id} value={s.id}>
-                      {s.subcategory?.category?.name ?? ""} / {s.subcategory?.name ?? ""} / {s.name}
+                      {s.subcategory?.category ? displayName(s.subcategory.category) : ""} / {s.subcategory ? displayName(s.subcategory) : ""} / {displayName(s)}
                     </option>
                   ))}
                 </select>
@@ -700,11 +849,7 @@ export default function ProductsManagerSection() {
             </div>
 
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={saveEdit}
-                className="rounded-lg bg-gray-900 px-4 py-2 text-sm text-white"
-              >
+              <button type="button" onClick={saveEdit} className="rounded-lg bg-gray-900 px-4 py-2 text-sm text-white">
                 {loading ? "Saving…" : "Save"}
               </button>
             </div>

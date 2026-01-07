@@ -34,12 +34,25 @@ function fmtDate(iso: string) {
 function formatErr(e: any) {
   if (!e) return "Unknown error";
   if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message || "Unknown error";
   if (e?.message) return e.message;
+  if (e?.error_description) return e.error_description;
+
   const bits: string[] = [];
   if (e?.code) bits.push(`code: ${e.code}`);
+  if (e?.status) bits.push(`status: ${e.status}`);
   if (e?.details) bits.push(`details: ${e.details}`);
   if (e?.hint) bits.push(`hint: ${e.hint}`);
   if (bits.length) return bits.join(" • ");
+
+  try {
+    const keys = Object.getOwnPropertyNames(e);
+    const obj: any = {};
+    for (const k of keys) obj[k] = e[k];
+    const s = JSON.stringify(obj);
+    if (s && s !== "{}") return s;
+  } catch {}
+
   try {
     return JSON.stringify(e);
   } catch {
@@ -333,33 +346,33 @@ export default function CreditsSection() {
       // Apply payment oldest-first (simple)
       let left = pay;
 
-      for (const row of activeGroup.rows) {
-        if (left <= 0) break;
+    for (const row of activeGroup.rows) {
+      if (left <= 0) break;
 
-        const bal = creditBalance(row as any);
-        if (bal <= 0) continue;
+      const bal = creditBalance(row as any);
+      if (bal <= 0) continue;
 
-        const take = Math.min(left, bal);
-        const currentPaid = creditPaidAmount(row as any);
-        const nextPaid = currentPaid + take;
-        const nextBal = Math.max(nnum((row as any).amount) - nextPaid, 0);
+      const take = Math.min(left, bal);
+      const currentPaid = creditPaidAmount(row as any);
+      const nextPaid = currentPaid + take;
+      const nextBal = Math.max(nnum((row as any).amount) - nextPaid, 0);
 
-        // Requires amount_paid column
-        const { error } = await supabase
-          .from("credits")
-          .update({
-            amount_paid: nextPaid,
-            status: nextBal <= 0.000001 ? "paid" : "open",
-            paid_at: nextBal <= 0.000001 ? now : null,
-          })
-          .eq("id", (row as any).id);
+      // Requires amount_paid column
+      const { error } = await supabase
+        .from("credits")
+        .update({
+          amount_paid: nextPaid,
+          status: nextBal <= 0.000001 ? "paid" : "open",
+          paid_at: nextBal <= 0.000001 ? now : null,
+        })
+        .eq("id", (row as any).id);
 
-        if (error) {
-          throw new Error("Partial payments need credits.amount_paid column. Add it then retry.");
-        }
-
-        left -= take;
+      if (error) {
+        throw new Error(formatErr(error));
       }
+
+      left -= take;
+    }
 
       // Optional: add payment note to newest row
       if (payNote.trim()) {

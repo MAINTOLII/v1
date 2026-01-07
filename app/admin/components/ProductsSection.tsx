@@ -3,9 +3,36 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
+function slugify(input: string) {
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+}
+
+function parseTags(input: string): string[] {
+  const arr = input
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  // de-dupe (case-insensitive) but keep original casing of first occurrence
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of arr) {
+    const k = t.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
+
 type SubSub = {
   id: string;
-  name: string;
+  name_en: string | null;
+  name_so: string | null;
 };
 
 type ProductRow = {
@@ -14,7 +41,10 @@ type ProductRow = {
   brand: string | null;
   is_active: boolean;
   subsubcat_id: string | null;
-  subsub?: { id: string; name: string } | null;
+  subsub?: { id: string; name_en: string | null; name_so: string | null } | null;
+  slug: string | null;
+  description: string | null;
+  tags: string[] | null;
 };
 
 type Product = {
@@ -24,6 +54,9 @@ type Product = {
   isActive: boolean;
   subsubcatId: string | null;
   subsubcatName: string;
+  slug: string | null;
+  description: string | null;
+  tags: string[];
 };
 
 export default function ProductsSection() {
@@ -38,6 +71,10 @@ export default function ProductsSection() {
   const [brand, setBrand] = useState("");
   const [subsubcatId, setSubsubcatId] = useState<string>("");
 
+  const [slug, setSlug] = useState("");
+  const [description, setDescription] = useState("");
+  const [tagsText, setTagsText] = useState("");
+
   const canAdd = useMemo(() => {
     return name.trim().length > 0 && subsubcatId.trim().length > 0;
   }, [name, subsubcatId]);
@@ -46,12 +83,18 @@ export default function ProductsSection() {
     try {
       const { data, error } = await supabase
         .from("subsubcategories")
-        .select("id,name")
-        .order("name", { ascending: true });
+        .select("id,name_en,name_so")
+        .order("name_en", { ascending: true });
 
       if (error) throw error;
 
-      setSubsubs((data ?? []).map((r: any) => ({ id: r.id, name: r.name })));
+      setSubsubs(
+        (data ?? []).map((r: any) => ({
+          id: r.id,
+          name_en: r.name_en ?? null,
+          name_so: r.name_so ?? null,
+        }))
+      );
     } catch (e: any) {
       console.error("loadSubsubs error:", e);
       setErrorMsg((prev) => prev ?? `Failed to load sub-subcategories: ${e?.message ?? String(e)}`);
@@ -65,7 +108,9 @@ export default function ProductsSection() {
       // Join to subsubcategories so we can display the name
       const { data, error } = await supabase
         .from("products")
-        .select("id,name,brand,is_active,subsubcat_id,subsub:subsubcategories!products_subsubcat_id_fkey(id,name)")
+        .select(
+          "id,name,brand,is_active,subsubcat_id,slug,description,tags,subsub:subsubcategories!products_subsubcat_id_fkey(id,name_en,name_so)"
+        )
         .order("created_at", { ascending: false });
 
       if (error) throw error;
@@ -79,7 +124,10 @@ export default function ProductsSection() {
           brand: p.brand ?? null,
           isActive: !!p.is_active,
           subsubcatId: p.subsubcat_id ?? null,
-          subsubcatName: p.subsub?.name ?? "—",
+          subsubcatName: p.subsub?.name_en ?? p.subsub?.name_so ?? "—",
+          slug: (p as any).slug ?? null,
+          description: (p as any).description ?? null,
+          tags: Array.isArray((p as any).tags) ? ((p as any).tags as string[]) : [],
         }))
       );
     } catch (e: any) {
@@ -107,13 +155,18 @@ export default function ProductsSection() {
         name: name.trim(),
         brand: brand.trim() || null,
         subsubcat_id: subsubcatId,
+        slug: (slug.trim() ? slugify(slug) : slugify(name)).trim() || null,
+        description: description.trim() || null,
+        tags: parseTags(tagsText),
         is_active: true,
       };
 
       const { data, error } = await supabase
         .from("products")
         .insert(payload)
-        .select("id,name,brand,is_active,subsubcat_id,subsub:subsubcategories!products_subsubcat_id_fkey(id,name)")
+        .select(
+          "id,name,brand,is_active,subsubcat_id,slug,description,tags,subsub:subsubcategories!products_subsubcat_id_fkey(id,name_en,name_so)"
+        )
         .single();
 
       if (error) throw error;
@@ -127,7 +180,10 @@ export default function ProductsSection() {
           brand: row.brand ?? null,
           isActive: !!row.is_active,
           subsubcatId: row.subsubcat_id ?? null,
-          subsubcatName: row.subsub?.name ?? "—",
+          subsubcatName: row.subsub?.name_en ?? row.subsub?.name_so ?? "—",
+          slug: (row as any).slug ?? null,
+          description: (row as any).description ?? null,
+          tags: Array.isArray((row as any).tags) ? (((row as any).tags as string[]) ?? []) : [],
         },
         ...prev,
       ]);
@@ -135,6 +191,9 @@ export default function ProductsSection() {
       setName("");
       setBrand("");
       setSubsubcatId("");
+      setSlug("");
+      setDescription("");
+      setTagsText("");
     } catch (e: any) {
       console.error("addProduct error:", e);
       setErrorMsg(e?.message ?? String(e));
@@ -246,6 +305,40 @@ export default function ProductsSection() {
           </div>
 
           <div className="md:col-span-3">
+            <label className="text-xs text-gray-600">Slug (optional)</label>
+            <input
+              value={slug}
+              onChange={(e) => setSlug(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400"
+              placeholder="e.g. al-burj-pasta"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              If empty, we auto-generate from the product name.
+            </p>
+          </div>
+
+          <div className="md:col-span-3">
+            <label className="text-xs text-gray-600">Description (optional)</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400"
+              placeholder="Short product description…"
+            />
+          </div>
+
+          <div className="md:col-span-3">
+            <label className="text-xs text-gray-600">Tags (comma separated)</label>
+            <input
+              value={tagsText}
+              onChange={(e) => setTagsText(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400"
+              placeholder="e.g. pasta, italian, dinner"
+            />
+          </div>
+
+          <div className="md:col-span-3">
             <label className="text-xs text-gray-600">Sub-subcategory</label>
             <select
               value={subsubcatId}
@@ -255,7 +348,7 @@ export default function ProductsSection() {
               <option value="">Select sub-subcategory…</option>
               {subsubs.map((ss) => (
                 <option key={ss.id} value={ss.id}>
-                  {ss.name}
+                  {(ss.name_en ?? ss.name_so ?? "—") + (ss.name_so ? ` / ${ss.name_so}` : "")}
                 </option>
               ))}
             </select>
@@ -298,7 +391,13 @@ export default function ProductsSection() {
                 <div className="text-xs text-gray-500">
                   {p.brand ? `${p.brand} • ` : ""}
                   {p.subsubcatName}
+                  {p.slug ? ` • /${p.slug}` : ""}
                 </div>
+                {p.tags.length > 0 && (
+                  <div className="mt-1 text-xs text-gray-500">
+                    Tags: {p.tags.join(", ")}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center gap-3">

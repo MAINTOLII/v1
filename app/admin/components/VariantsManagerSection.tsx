@@ -3,9 +3,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-type Category = { id: string; name: string };
-type Subcategory = { id: string; name: string; category?: Category | null };
-type SubsubCategory = { id: string; name: string; subcategory?: Subcategory | null };
+type Category = { id: string; name_en?: string | null; name_so?: string | null; slug?: string | null };
+type Subcategory = {
+  id: string;
+  name_en?: string | null;
+  name_so?: string | null;
+  slug?: string | null;
+  category?: Category | null;
+};
+type SubsubCategory = {
+  id: string;
+  name_en?: string | null;
+  name_so?: string | null;
+  slug?: string | null;
+  subcategory?: Subcategory | null;
+};
 
 type Product = {
   id: string;
@@ -31,6 +43,14 @@ type Variant = {
 function asOne<T>(v: T | T[] | null | undefined): T | null {
   if (!v) return null;
   return Array.isArray(v) ? (v[0] ?? null) : v;
+}
+
+function displayName(row: any): string {
+  const en = row?.name_en;
+  const so = row?.name_so;
+  const slug = row?.slug;
+  const id = row?.id;
+  return String(en ?? so ?? slug ?? id ?? "");
 }
 
 function kgToG(inputKg: string) {
@@ -119,23 +139,42 @@ export default function VariantsManagerSection() {
 
   async function loadFilters() {
     // categories
-    const { data: cData, error: cErr } = await supabase.from("categories").select("id,name").order("name");
+    const { data: cData, error: cErr } = await supabase
+      .from("categories")
+      .select("id,name_en,name_so,slug")
+      .order("name_en", { ascending: true, nullsFirst: false });
     if (cErr) throw cErr;
-    setCategories((cData ?? []).map((c: any) => ({ id: String(c.id), name: String(c.name) })));
+    setCategories(
+      (cData ?? []).map((c: any) => ({
+        id: String(c.id),
+        name_en: c.name_en ?? null,
+        name_so: c.name_so ?? null,
+        slug: c.slug ?? null,
+      }))
+    );
 
     // subcategories (normalize category join to single object)
     const { data: scData, error: scErr } = await supabase
       .from("subcategories")
-      .select("id,name,category:categories(id,name)")
-      .order("name");
+      .select("id,name_en,name_so,slug,category:categories(id,name_en,name_so,slug)")
+      .order("name_en", { ascending: true, nullsFirst: false });
     if (scErr) throw scErr;
 
     const scNorm: Subcategory[] = (scData ?? []).map((row: any) => {
       const cat = asOne<any>(row.category);
       return {
         id: String(row.id),
-        name: String(row.name),
-        category: cat ? { id: String(cat.id), name: String(cat.name) } : null,
+        name_en: row.name_en ?? null,
+        name_so: row.name_so ?? null,
+        slug: row.slug ?? null,
+        category: cat
+          ? {
+              id: String(cat.id),
+              name_en: cat.name_en ?? null,
+              name_so: cat.name_so ?? null,
+              slug: cat.slug ?? null,
+            }
+          : null,
       };
     });
     setSubcategories(scNorm);
@@ -143,8 +182,10 @@ export default function VariantsManagerSection() {
     // subsubcategories (normalize nested joins)
     const { data: ssData, error: ssErr } = await supabase
       .from("subsubcategories")
-      .select("id,name,subcategory:subcategories(id,name,category:categories(id,name))")
-      .order("name");
+      .select(
+        "id,name_en,name_so,slug,subcategory:subcategories(id,name_en,name_so,slug,category:categories(id,name_en,name_so,slug))"
+      )
+      .order("name_en", { ascending: true, nullsFirst: false });
     if (ssErr) throw ssErr;
 
     const ssNorm: SubsubCategory[] = (ssData ?? []).map((row: any) => {
@@ -154,14 +195,25 @@ export default function VariantsManagerSection() {
       const subcategory: Subcategory | null = subRaw
         ? {
             id: String(subRaw.id),
-            name: String(subRaw.name),
-            category: catRaw ? { id: String(catRaw.id), name: String(catRaw.name) } : null,
+            name_en: subRaw.name_en ?? null,
+            name_so: subRaw.name_so ?? null,
+            slug: subRaw.slug ?? null,
+            category: catRaw
+              ? {
+                  id: String(catRaw.id),
+                  name_en: catRaw.name_en ?? null,
+                  name_so: catRaw.name_so ?? null,
+                  slug: catRaw.slug ?? null,
+                }
+              : null,
           }
         : null;
 
       return {
         id: String(row.id),
-        name: String(row.name),
+        name_en: row.name_en ?? null,
+        name_so: row.name_so ?? null,
+        slug: row.slug ?? null,
         subcategory,
       };
     });
@@ -172,7 +224,7 @@ export default function VariantsManagerSection() {
     const { data, error } = await supabase
       .from("product_variants")
       .select(
-        "id,product_id,name,variant_type,pack_size_g,sell_price,sku,is_active,created_at,product:products(id,name,brand,is_active,subsub:subsubcategories(id,name,subcategory:subcategories(id,name,category:categories(id,name))))"
+        "id,product_id,name,variant_type,pack_size_g,sell_price,sku,is_active,created_at,product:products(id,name,brand,is_active,subsub:subsubcategories(id,name_en,name_so,slug,subcategory:subcategories(id,name_en,name_so,slug,category:categories(id,name_en,name_so,slug))))"
       )
       .order("created_at", { ascending: false });
     if (error) throw error;
@@ -193,12 +245,23 @@ export default function VariantsManagerSection() {
             subsub: subsub
               ? {
                   id: String(subsub.id),
-                  name: String(subsub.name),
+                  name_en: subsub.name_en ?? null,
+                  name_so: subsub.name_so ?? null,
+                  slug: subsub.slug ?? null,
                   subcategory: subcat
                     ? {
                         id: String(subcat.id),
-                        name: String(subcat.name),
-                        category: cat ? { id: String(cat.id), name: String(cat.name) } : null,
+                        name_en: subcat.name_en ?? null,
+                        name_so: subcat.name_so ?? null,
+                        slug: subcat.slug ?? null,
+                        category: cat
+                          ? {
+                              id: String(cat.id),
+                              name_en: cat.name_en ?? null,
+                              name_so: cat.name_so ?? null,
+                              slug: cat.slug ?? null,
+                            }
+                          : null,
                       }
                     : null,
                 }
@@ -286,7 +349,7 @@ export default function VariantsManagerSection() {
         .update(payload)
         .eq("id", editing.id)
         .select(
-          "id,product_id,name,variant_type,pack_size_g,sell_price,sku,is_active,created_at,product:products(id,name,brand,is_active,subsub:subsubcategories(id,name,subcategory:subcategories(id,name,category:categories(id,name))))"
+          "id,product_id,name,variant_type,pack_size_g,sell_price,sku,is_active,created_at,product:products(id,name,brand,is_active,subsub:subsubcategories(id,name_en,name_so,slug,subcategory:subcategories(id,name_en,name_so,slug,category:categories(id,name_en,name_so,slug))))"
         )
         .single();
 
@@ -317,12 +380,23 @@ export default function VariantsManagerSection() {
               subsub: subsub
                 ? {
                     id: String(subsub.id),
-                    name: String(subsub.name),
+                    name_en: subsub.name_en ?? null,
+                    name_so: subsub.name_so ?? null,
+                    slug: subsub.slug ?? null,
                     subcategory: subcat
                       ? {
                           id: String(subcat.id),
-                          name: String(subcat.name),
-                          category: cat ? { id: String(cat.id), name: String(cat.name) } : null,
+                          name_en: subcat.name_en ?? null,
+                          name_so: subcat.name_so ?? null,
+                          slug: subcat.slug ?? null,
+                          category: cat
+                            ? {
+                                id: String(cat.id),
+                                name_en: cat.name_en ?? null,
+                                name_so: cat.name_so ?? null,
+                                slug: cat.slug ?? null,
+                              }
+                            : null,
                         }
                       : null,
                   }
@@ -417,7 +491,7 @@ export default function VariantsManagerSection() {
             <option value="">All</option>
             {categories.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name}
+                {displayName(c)}
               </option>
             ))}
           </select>
@@ -436,7 +510,7 @@ export default function VariantsManagerSection() {
             <option value="">All</option>
             {visibleSubcats.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name}
+                {displayName(s)}
               </option>
             ))}
           </select>
@@ -452,7 +526,7 @@ export default function VariantsManagerSection() {
             <option value="">All</option>
             {visibleSubsubs.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name}
+                {displayName(s)}
               </option>
             ))}
           </select>
@@ -488,7 +562,13 @@ export default function VariantsManagerSection() {
               const subsub = prod?.subsub;
               const subcat = subsub?.subcategory;
               const cat = subcat?.category;
-              const catPath = [cat?.name, subcat?.name, subsub?.name].filter(Boolean).join(" / ");
+              const catPath = [
+                cat ? displayName(cat) : "",
+                subcat ? displayName(subcat) : "",
+                subsub ? displayName(subsub) : "",
+              ]
+                .filter(Boolean)
+                .join(" / ");
 
               return (
                 <tr key={v.id} className="border-t">

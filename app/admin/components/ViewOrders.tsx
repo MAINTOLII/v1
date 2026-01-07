@@ -304,11 +304,49 @@ export default function ViewOrdersSection() {
     try {
       const supabase = getSupabase();
 
-      // Must succeed: confirm_order() is what deducts inventory + writes inventory_movements
-      const { error } = await supabase.rpc("confirm_order", { p_order_id: activeOrderId });
-      if (error) throw error;
+      // Must succeed: confirm_order() deducts inventory + writes inventory_movements
+      const { error: rpcErr } = await supabase.rpc("confirm_order", { p_order_id: activeOrderId });
+      if (rpcErr) {
+        const msg = formatErr(rpcErr);
+        // Extra hint: common if RLS blocks function execution or table writes
+        throw new Error(
+          `${msg}\n\nIf you see permission/RLS errors, allow your admin role to execute confirm_order() and write to inventory_movements/inventory.`
+        );
+      }
 
-      setUpdateOk("Confirmed. Inventory deducted.");
+      // Verify that sale movements were written (this is what Sales page reads for cost)
+      // If RLS blocks reading inventory_movements, this check may fail; we'll ignore that but still refresh.
+      try {
+        const { data: mv, error: mvErr } = await supabase
+          .from("inventory_movements")
+          .select("id, cost_total")
+          .eq("order_id", activeOrderId)
+          .eq("type", "sale")
+          .limit(5);
+
+        if (!mvErr) {
+          const count = (mv ?? []).length;
+          const sum = (mv ?? []).reduce((s: number, r: any) => s + Number(r.cost_total ?? 0), 0);
+
+          if (count === 0) {
+            setUpdateErr(
+              "Confirmed, but NO 'sale' inventory movements were created for this order. Sales cost will show 0.\n\nFix: ensure confirm_order() inserts inventory_movements with type='sale' and order_id, and that RLS allows those inserts."
+            );
+          } else if (sum === 0) {
+            setUpdateErr(
+              "Confirmed, but sale movements cost_total is 0. Sales cost will show 0.\n\nFix: set inventory.avg_cost_per_unit / avg_cost_per_g via restocks (or compute cost_total correctly on sale)."
+            );
+          } else {
+            setUpdateOk(`Confirmed. Sale movements created. (sample cost sum: $${sum.toFixed(2)})`);
+          }
+        } else {
+          // If we can't read movements due to RLS, still show success and refresh.
+          setUpdateOk("Confirmed. Inventory deducted.");
+        }
+      } catch {
+        setUpdateOk("Confirmed. Inventory deducted.");
+      }
+
       await refreshActive();
     } catch (e: any) {
       setUpdateErr(formatErr(e));

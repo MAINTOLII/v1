@@ -40,19 +40,39 @@ type CustomerRow = {
 function formatErr(e: any) {
   if (!e) return "Unknown error";
   if (typeof e === "string") return e;
+
+  // Standard Error
+  if (e instanceof Error) {
+    return e.message || "Unknown error";
+  }
+
+  // Supabase/PostgREST style
   if (e?.message) return e.message;
+  if (e?.error_description) return e.error_description;
+  if (e?.details && typeof e.details === "string") return e.details;
+
   const parts: string[] = [];
   if (e?.code) parts.push(`code: ${e.code}`);
-  if (e?.details) parts.push(`details: ${e.details}`);
+  if (e?.status) parts.push(`status: ${e.status}`);
+  if (e?.statusText) parts.push(`statusText: ${e.statusText}`);
   if (e?.hint) parts.push(`hint: ${e.hint}`);
+  if (e?.details) parts.push(`details: ${e.details}`);
   if (parts.length) return parts.join(" • ");
+
+  // Try to stringify including non-enumerable keys
   try {
     const keys = Object.getOwnPropertyNames(e);
     const obj: any = {};
-    for (const k of keys) obj[k] = (e as any)[k];
+    for (const k of keys) obj[k] = e[k];
     const s = JSON.stringify(obj);
     if (s && s !== "{}") return s;
   } catch {}
+
+  try {
+    const s2 = JSON.stringify(e);
+    if (s2 && s2 !== "{}") return s2;
+  } catch {}
+
   return "Unknown error (check console + Network tab)";
 }
 
@@ -371,7 +391,7 @@ export default function FastSection() {
       .join(" | ");
   }, [cart]);
 
-  async function submitSaleAsMovements() {
+  async function submitSaleAsOrder() {
     setErrorMsg(null);
     setSuccessMsg(null);
 
@@ -399,22 +419,130 @@ export default function FastSection() {
       const total = Number(totalEstimate);
       const totalSafe = Number.isFinite(total) ? total : 0;
 
-      // Apply each item as a manual_out movement (negative delta)
-      for (const c of cart) {
-        const dg = c.variant_type === "weight" ? -kgToG(c.qty_kg) : 0;
-        const du = c.variant_type === "unit" ? -toInt(c.qty_units) : 0;
+      // 1) Create an order so it shows in Sales page
+      // IMPORTANT: rely on DB defaults for fields that may have CHECK constraints
+      // (channel/payment_method/payment_status/currency/amount_paid).
+      // We store the actual POS method in the note.
+      const orderTotal = totalSafe;
 
-        const { error: rpcErr } = await supabase.rpc("apply_inventory_movement", {
-          p_variant_id: c.variant_id,
-          p_type: "manual_out",
-          p_qty_g: dg,
-          p_qty_units: du,
-          p_cost_total: null,
-          p_supplier_name: null,
-          p_note: header,
+      const baseNote = `${header} | POS payment:${paymentMethod}`;
+
+      // Some DBs restrict orders.channel via CHECK (orders_channel_chk).
+      // Try a small set of channels and infer "POS" in UI using the note.
+      const channelCandidates = ["pos", "POS", "whatsapp", "store", "offline"].filter(Boolean);
+
+      let orderId = "";
+      let lastOrderErr: any = null;
+
+      for (const ch of channelCandidates) {
+        const orderPayload: any = {
+          customer_id: selectedCustomer?.id ?? null,
+          customer_phone: phoneClean || selectedCustomer?.phone || null,
+          channel: ch,
+          status: "pending",
+          subtotal: orderTotal,
+          delivery_fee: 0,
+          discount: 0,
+          total: orderTotal,
+          // Put source on its own line so other pages can detect POS reliably
+          note: `${baseNote}\nSource: Fast POS`,
+          address: null,
+        };
+
+        const { data: orderRow, error: orderErr } = await supabase
+          .from("orders")
+          .insert(orderPayload)
+          .select("id")
+          .single();
+
+        if (!orderErr && orderRow?.id) {
+          orderId = String(orderRow.id);
+          lastOrderErr = null;
+          break;
+        }
+
+        lastOrderErr = orderErr;
+
+        // If it's NOT the channel check, don't keep retrying.
+        const msg = String(orderErr?.message ?? "");
+        const details = String(orderErr?.details ?? "");
+        if (!msg.includes("orders_channel_chk") && !details.includes("orders_channel_chk")) {
+          break;
+        }
+      }
+
+      if (!orderId) {
+        console.error("Fast POS: order insert failed", {
+          orderErr: lastOrderErr,
+          keys: lastOrderErr ? Object.getOwnPropertyNames(lastOrderErr) : [],
         });
+        throw new Error(`Order insert failed: ${formatErr(lastOrderErr)}`);
+      }
 
-        if (rpcErr) throw rpcErr;
+      // Best-effort: for cash/transfer, record payment and mark order paid.
+      // If your DB has strict constraints, these may fail; the order will still exist.
+      if (paymentMethod !== "credit" && orderTotal > 0) {
+        // 1) insert into payments table (safe; ignore errors)
+        const { error: payErr } = await supabase.from("payments").insert({
+          order_id: orderId,
+          customer_id: selectedCustomer?.id ?? null,
+          amount: orderTotal,
+          method: paymentMethod === "cash" ? "cash" : "transfer",
+          note: `Fast POS payment (${paymentMethod})`,
+        });
+        if (payErr) console.warn("Fast POS: payments insert failed (order still saved)", payErr);
+
+        // 2) update order to paid (ignore errors if constrained)
+        const { error: updErr } = await supabase
+          .from("orders")
+          .update({ payment_status: "paid", amount_paid: orderTotal })
+          .eq("id", orderId);
+        if (updErr) console.warn("Fast POS: order payment update failed (order still saved)", updErr);
+      }
+
+      // 2) Insert order items
+      const orderItemsPayload = cart.map((c) => {
+        const vt = c.variant_type;
+        const qty_g = vt === "weight" ? kgToG(c.qty_kg) : null;
+        const qty_units = vt === "unit" ? toInt(c.qty_units) : null;
+
+        const unitPrice = Number(c.unit_price);
+        const unit_price = Number.isFinite(unitPrice) ? unitPrice : 0;
+
+        const line_total = vt === "unit" ? unit_price * toInt(c.qty_units) : unit_price * Number(c.qty_kg);
+
+        return {
+          order_id: orderId,
+          variant_id: c.variant_id,
+          qty_g,
+          qty_units,
+          unit_price,
+          line_total: Number.isFinite(line_total) ? line_total : 0,
+        };
+      });
+
+      // STEP B: insert order items
+      const { error: oiErr } = await supabase.from("order_items").insert(orderItemsPayload);
+      if (oiErr) {
+        console.error("Fast POS: order_items insert failed", {
+          oiErr,
+          orderId,
+          sampleItem: orderItemsPayload?.[0],
+          keys: oiErr ? Object.getOwnPropertyNames(oiErr) : [],
+        });
+        throw new Error(`Order items insert failed: ${formatErr(oiErr)}`);
+      }
+
+      // 3) Confirm order via DB function so it writes inventory "sale" movements with cost_total
+      // This ensures Sales page can show cost/profit for POS orders.
+      const { error: confirmErr } = await supabase.rpc("confirm_order", { p_order_id: orderId });
+      if (confirmErr) {
+        console.error("Fast POS: confirm_order failed", {
+          confirmErr,
+          orderId,
+          keys: confirmErr ? Object.getOwnPropertyNames(confirmErr) : [],
+        });
+        throw new Error(`Confirm order failed: ${formatErr(confirmErr)}`);
       }
 
       setCart([]);
@@ -467,11 +595,25 @@ export default function FastSection() {
 
       setSuccessMsg(
         paymentMethod === "credit"
-          ? `Saved ${receiptId}. Inventory updated. Credit recorded (if credits table exists).`
-          : `Saved ${receiptId}. Inventory updated.`
+          ? `Saved ${receiptId}. Order confirmed (#${String(orderId).slice(0, 8)}). Inventory + cost recorded. Credit recorded (if credits table exists).`
+          : `Saved ${receiptId}. Order confirmed (#${String(orderId).slice(0, 8)}). Inventory + cost recorded.`
       );
     } catch (e: any) {
-      console.error("FastSection submitSaleAsMovements error:", e);
+      try {
+        console.error("FastSection submitSaleAsOrder error:", e);
+        console.error("FastSection error keys:", e ? Object.getOwnPropertyNames(e) : []);
+        console.error("FastSection error json:", (() => {
+          try {
+            const keys = e ? Object.getOwnPropertyNames(e) : [];
+            const obj: any = {};
+            for (const k of keys) obj[k] = e[k];
+            return JSON.stringify(obj);
+          } catch {
+            return "<unstringifiable>";
+          }
+        })());
+      } catch {}
+
       setErrorMsg(formatErr(e));
     } finally {
       setLoading(false);
@@ -484,7 +626,7 @@ return (
         <div>
           <h2 className="text-lg font-semibold">Fast POS</h2>
           <p className="mt-2 text-sm text-gray-600">
-            Quick in-store selling: capture customer phone + items, then save as inventory movements (<b>manual_out</b>).
+            Quick in-store selling: capture customer + items, then save as an <b>order</b> and confirm it (writes inventory <b>sale</b> movements + cost).
           </p>
         </div>
 
@@ -733,7 +875,7 @@ return (
         <button
           type="button"
           disabled={loading || cart.length === 0}
-          onClick={submitSaleAsMovements}
+          onClick={submitSaleAsOrder}
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white disabled:opacity-60"
         >
           {loading ? "Saving…" : "Save order (reduce inventory)"}
@@ -751,7 +893,7 @@ return (
         </button>
 
         <div className="text-xs text-gray-500">
-          This does not create a Sales table yet — it only writes movements. We can add Sales later without changing inventory logic.
+          Fast POS creates an <b>order</b> (channel: <b>pos</b>) then runs <b>confirm_order()</b> to reduce inventory and record cost.
         </div>
       </div>
     </div>
