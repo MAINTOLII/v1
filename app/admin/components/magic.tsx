@@ -118,9 +118,14 @@ export default function Magic() {
       if (!map[v.product_id]) map[v.product_id] = [];
       map[v.product_id].push(v);
     }
-    // stable sort variants by name
+    // sort variants by cheapest first, then by name
     for (const pid of Object.keys(map)) {
-      map[pid].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      map[pid].sort((a, b) => {
+        const ap = a.sell_price == null ? Number.POSITIVE_INFINITY : Number(a.sell_price);
+        const bp = b.sell_price == null ? Number.POSITIVE_INFINITY : Number(b.sell_price);
+        if (ap !== bp) return ap - bp;
+        return String(a.name).localeCompare(String(b.name));
+      });
     }
     return map;
   }, [variants]);
@@ -141,6 +146,7 @@ export default function Magic() {
     const existing = selectedVariantByProduct[productId];
     if (existing) return existing;
     const vs = variantsByProduct[productId] ?? [];
+    // variantsByProduct is already sorted cheapest-first
     return vs[0]?.id ?? null;
   }
 
@@ -224,7 +230,15 @@ export default function Magic() {
         const next = { ...prev };
         for (const pr of p) {
           if (next[pr.id]) continue;
-          const vs = v.filter((x) => x.product_id === pr.id);
+          const vs = v
+            .filter((x) => x.product_id === pr.id)
+            .slice()
+            .sort((a, b) => {
+              const ap = a.sell_price == null ? Number.POSITIVE_INFINITY : Number(a.sell_price);
+              const bp = b.sell_price == null ? Number.POSITIVE_INFINITY : Number(b.sell_price);
+              if (ap !== bp) return ap - bp;
+              return String(a.name).localeCompare(String(b.name));
+            });
           if (vs[0]?.id) next[pr.id] = vs[0].id;
         }
         return next;
@@ -257,10 +271,18 @@ export default function Magic() {
 
   function renderVariantLabel(v: VariantRow) {
     const bits: string[] = [];
-    bits.push(v.name);
+
+    // Never display the literal word "Default" in the UI
+    const n = String(v.name ?? "").trim();
+    const isDefault = n.toLowerCase() === "default";
+    if (!isDefault && n) bits.push(n);
+
+    // Show pack size if relevant
     if (v.variant_type === "weight") {
       if (v.pack_size_g) bits.push(`${v.pack_size_g}g`);
     }
+
+    // If name was Default and there's no other useful label, return empty string
     return bits.join(" • ");
   }
 
@@ -300,10 +322,28 @@ export default function Magic() {
     }
   }
 
-  function getPrimaryImageUrl(variantId: string) {
+  function getPrimaryImageUrlForVariant(variantId: string) {
     const imgs = imagesMap[variantId] ?? [];
     const primary = imgs.find((x) => x.is_primary);
     return primary?.url ?? imgs[0]?.url ?? null;
+  }
+
+  function getPrimaryImageUrlForProduct(productId: string, preferredVariantId?: string | null) {
+    // 1) Prefer the selected/preferred variant's image
+    if (preferredVariantId) {
+      const u = getPrimaryImageUrlForVariant(preferredVariantId);
+      if (u) return u;
+    }
+
+    // 2) Fallback: any other variant image for this product
+    const vs = variantsByProduct[productId] ?? [];
+    for (const v of vs) {
+      if (preferredVariantId && v.id === preferredVariantId) continue;
+      const u = getPrimaryImageUrlForVariant(v.id);
+      if (u) return u;
+    }
+
+    return null;
   }
 
   async function uploadVariantImage(variantId: string, file: File) {
@@ -463,7 +503,7 @@ export default function Magic() {
           const selectedVariant = selectedVariantId ? vs.find((x) => x.id === selectedVariantId) ?? null : null;
           const inv = selectedVariantId ? inventoryMap[selectedVariantId] : null;
           const imgs = selectedVariantId ? imagesMap[selectedVariantId] ?? [] : [];
-          const primaryUrl = selectedVariantId ? getPrimaryImageUrl(selectedVariantId) : null;
+          const primaryUrl = getPrimaryImageUrlForProduct(p.id, selectedVariantId);
           const draft = selectedVariantId ? stockDraft[selectedVariantId] ?? { qty_units: "0", qty_g: "0" } : null;
           const isExpanded = !!expandedByProduct[p.id];
           const price = selectedVariant?.sell_price != null ? money(selectedVariant.sell_price) : "—";
@@ -474,9 +514,7 @@ export default function Magic() {
                 {primaryUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={primaryUrl} alt={p.name} className="h-full w-full object-cover" />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-[11px] text-gray-500">No image</div>
-                )}
+                ) : null}
                 {p.is_active === false ? (
                   <div className="absolute left-2 top-2 rounded-full bg-red-600 px-2 py-0.5 text-[11px] font-semibold text-white">
                     Inactive
@@ -508,7 +546,12 @@ export default function Magic() {
                 <div className="mt-2">
                   <div className="text-[11px] text-gray-600">Selected</div>
                   <div className="truncate text-xs font-semibold text-gray-900">
-                    {selectedVariant ? renderVariantLabel(selectedVariant) : "No variant"}
+                    {selectedVariant ? (() => {
+                      const label = renderVariantLabel(selectedVariant);
+                      // If the only variant is the auto-created Default, don't show any label here.
+                      if ((vs?.length ?? 0) <= 1 && !label) return "";
+                      return label || "";
+                    })() : "No variant"}
                   </div>
                   <div className="mt-1 text-lg font-bold text-gray-900">{price}</div>
                 </div>
@@ -516,6 +559,9 @@ export default function Magic() {
                 <div className="mt-3">
                   {vs.length === 0 ? (
                     <div className="rounded-xl border bg-gray-50 p-2 text-xs text-gray-700">No variants.</div>
+                  ) : vs.length === 1 ? (
+                    // Single-variant product (often the auto-created "Default" variant) -> don't show selector buttons
+                    <div className="text-[11px] text-gray-500">&nbsp;</div>
                   ) : (
                     <div className="flex flex-wrap gap-2">
                       {vs.map((v) => {
@@ -538,7 +584,11 @@ export default function Magic() {
                             }
                             title={renderVariantLabel(v)}
                           >
-                            {renderVariantLabel(v)}
+                            {(() => {
+                              const label = renderVariantLabel(v);
+                              // Fallback if label is empty (e.g., a Default variant)
+                              return label || (v.pack_size_g ? `${v.pack_size_g}g` : (v.variant_type || "Variant"));
+                            })()}
                           </button>
                         );
                       })}

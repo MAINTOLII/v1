@@ -10,6 +10,7 @@ import InventorySection from "./components/InventorySection";
 import MovementsSection from "./components/MovementsSection";
 import SettingsSection from "./components/SettingsSection";
 import MagicSection from "./components/magic";
+import Slash from "./components/slash";
 
 import VariantsManagerSection from "./components/VariantsManagerSection";
 import ProductsManagerSection from "./components/ProductsManagerSection";
@@ -40,7 +41,8 @@ type Section =
   | "credits"
   | "expenses"
   | "settings"
-  | "magic";
+    | "slash"
+    | "magic";
 
 const NAV: Array<{ key: Section; label: string }> = [
   { key: "dashboard", label: "Dashboard" },
@@ -49,6 +51,7 @@ const NAV: Array<{ key: Section; label: string }> = [
   { key: "fastpos", label: "Fast POS" },
   { key: "credits", label: "Credits" },
   { key: "expenses", label: "Expenses" },
+  { key: "slash", label: "slash" },
 
   // Everything else
   { key: "categories", label: "Categories" },
@@ -249,6 +252,8 @@ export default function AdminPage() {
             {active === "expenses" && <ExpensesSection />}
             {active === "settings" && <SettingsSection />}
             {active === "magic" && <MagicSection />}
+                        {active === "slash" && <Slash />}
+
 
           </div>
         </main>

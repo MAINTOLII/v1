@@ -3,6 +3,23 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
+function formatErr(e: any) {
+  if (!e) return "Unknown error";
+  if (typeof e === "string") return e;
+  if (e?.message) {
+    const parts: string[] = [String(e.message)];
+    if (e?.code) parts.push(`code=${e.code}`);
+    if (e?.details) parts.push(`details=${e.details}`);
+    if (e?.hint) parts.push(`hint=${e.hint}`);
+    return parts.join(" • ");
+  }
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return "Unknown error";
+  }
+}
+
 type Product = {
   id: string;
   name: string;
@@ -72,30 +89,44 @@ async function uploadVariantImage(variantId: string, file: File) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const path = `variants/${variantId}/${stamp}.${ext}`;
 
-  const { error: upErr } = await supabase.storage
+  // 1) Upload to Storage
+  const { data: upData, error: upErr } = await supabase.storage
     .from(VARIANT_IMAGES_BUCKET)
     .upload(path, file, { upsert: true, contentType: file.type });
-  if (upErr) throw upErr;
 
-  const { data } = supabase.storage.from(VARIANT_IMAGES_BUCKET).getPublicUrl(path);
-  const url = data?.publicUrl;
+  if (upErr) {
+    // Supabase errors sometimes don't JSON stringify well; log key fields explicitly.
+    console.error("[Storage upload blocked]", {
+      bucket: VARIANT_IMAGES_BUCKET,
+      path,
+      message: (upErr as any)?.message,
+      name: (upErr as any)?.name,
+      status: (upErr as any)?.status,
+      error: upErr,
+    });
+    throw new Error(`Storage upload failed: ${formatErr(upErr)}`);
+  }
+
+  // 2) Build a public URL (bucket should be PUBLIC)
+  const { data: pub } = supabase.storage.from(VARIANT_IMAGES_BUCKET).getPublicUrl(path);
+  const url = pub?.publicUrl;
   if (!url) throw new Error("Could not get public URL for uploaded image");
 
-  // Save reference (requires table: public.product_variant_images)
+  // 3) Save reference in DB (table: public.product_variant_images)
   const { data: ins, error: insErr } = await supabase
     .from("product_variant_images")
     .insert({ variant_id: variantId, url, is_primary: true })
     .select("id,variant_id,url,is_primary,created_at")
     .single();
 
-  // attach storage path locally (optional) so UI/components can still reference it if needed
-  const out: VariantImage = { ...(ins as any), path };
-
   if (insErr) {
-    // Upload succeeded but DB insert failed
-    throw insErr;
+    console.error("[DB insert blocked]", { table: "product_variant_images", payload: { variant_id: variantId, url }, insErr });
+    // Note: the file may already be uploaded even if DB insert fails.
+    throw new Error(`DB insert failed: ${formatErr(insErr)}`);
   }
 
+  // Attach storage path locally (optional)
+  const out: VariantImage = { ...(ins as any), path };
   return out;
 }
 
@@ -241,9 +272,7 @@ export default function VariantsSection() {
         (data as any).images = [imgRow];
       } catch (imgErr: any) {
         console.error("Variant image upload failed:", imgErr);
-        setErrorMsg(
-          `Image upload failed: ${imgErr?.message || "Unknown error"}. (Make sure Storage bucket '${VARIANT_IMAGES_BUCKET}' exists and table 'product_variant_images' exists.)`
-        );
+        setErrorMsg(String(imgErr?.message || formatErr(imgErr)));
       } finally {
         setUploadingVariantId(null);
       }
@@ -336,7 +365,17 @@ export default function VariantsSection() {
             <input
               type="file"
               accept="image/*"
-              onChange={(e) => setNewImageFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => {
+                const el = e.currentTarget;
+                const f = el.files?.[0] ?? null;
+                setNewImageFile(f);
+                // Reset so picking the same file again triggers change
+                try {
+                  if (el && el.isConnected) el.value = "";
+                } catch {
+                  // ignore
+                }
+              }}
               className="w-full rounded border bg-white px-3 py-2 text-sm"
             />
             <div className="mt-1 text-xs text-gray-500">
@@ -393,28 +432,31 @@ export default function VariantsSection() {
                       type="file"
                       accept="image/*"
                       onChange={async (e) => {
-                        const f = e.target.files?.[0] ?? null;
+                        const inputEl = e.currentTarget;
+                        const f = inputEl?.files?.[0] ?? null;
+
+                        // Reset ASAP, but guard against the input being detached/unmounted
+                        try {
+                          if (inputEl && inputEl.isConnected) inputEl.value = "";
+                        } catch {
+                          // ignore
+                        }
+
                         if (!f) return;
                         setErrorMsg(null);
+
                         try {
                           setUploadingVariantId(v.id);
                           const imgRow = await uploadVariantImage(v.id, f);
+
                           setVariants((prev) =>
-                            prev.map((x) =>
-                              x.id === v.id
-                                ? { ...x, images: [imgRow, ...(x.images ?? [])] }
-                                : x
-                            )
+                            prev.map((x) => (x.id === v.id ? { ...x, images: [imgRow, ...(x.images ?? [])] } : x))
                           );
                         } catch (imgErr: any) {
                           console.error("Variant image upload failed:", imgErr);
-                          setErrorMsg(
-                            `Image upload failed: ${imgErr?.message || "Unknown error"}. (Make sure Storage bucket '${VARIANT_IMAGES_BUCKET}' exists and table 'product_variant_images' exists.)`
-                          );
+                          setErrorMsg(String(imgErr?.message || formatErr(imgErr)));
                         } finally {
                           setUploadingVariantId(null);
-                          // reset input so re-uploading same file works
-                          e.currentTarget.value = "";
                         }
                       }}
                       className="text-xs"
